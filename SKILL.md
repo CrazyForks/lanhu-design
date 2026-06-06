@@ -10,6 +10,7 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 通过内置脚本直接调用蓝湖 HTTP API，读取 UI 设计稿、分析设计规格、获取切图信息，并把切图落到当前项目的资源目录。
 
 需要详细工具契约、返回结构和还原规则时，读取 `references/lanhu-design-tools.md`。
+需要设计还原实现规则（CSS 值保真、DOM 结构映射、切图命名策略、目录选择、倍率指引）时，读取 `references/design-implementation-rules.md`。
 
 ## 前置条件
 
@@ -52,13 +53,43 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 
 ## 设计还原规则
 
-分析工具返回的 HTML+CSS 是设计规格的主要依据。实现 UI 时按以下优先级取值：
+完整规则见 `references/design-implementation-rules.md`。以下是必须遵守的核心要求。
 
-1. HTML+CSS：颜色、尺寸、间距、字体、圆角、渐变、定位等参数的权威来源。
-2. Design Tokens：只补充 HTML+CSS 缺失或无法完整表达的渐变、阴影、边框、透明度等信息。
-3. 设计图图片：只用于视觉核对，不覆盖 HTML+CSS 中的精确数值。
+### 数据来源优先级
 
-保留 CSS 数值，不要擅自改色值格式、四舍五入、简化渐变、替换字体 fallback、把图片资源改成 SVG/CSS 形状/emoji，也不要省略可见元素。最终代码中不要保留蓝湖远程 CDN URL，所有图片都下载到本地并按项目约定引用。
+1. **HTML+CSS**：颜色、尺寸、间距、字体、圆角、渐变、定位等参数的唯一权威来源。必须直接复制精确的 CSS 属性值。
+2. **Design Tokens（切图元数据）**：补充 HTML+CSS 缺失的 `fills`、`borders`、`opacity`、`rotation`、`text_style`、`shadows`、`border_radius` 等信息。
+3. **设计图图片**：仅用于视觉核对，不覆盖 HTML+CSS 中的精确数值。
+
+### 禁止修改 CSS 值
+
+- 不要转换色值格式（`rgba()` ↔ hex 保持原样）。
+- 不要四舍五入或简化数值（如 `0.30000001192092896` 保持原样）。
+- 不要把 `linear-gradient` 简化成纯色。
+- 不要调整 `font-family` 顺序或删除 fallback 字体。
+- 不要把 margin/padding 取整为"干净"的数字。
+- 不要用 SVG、CSS shape、emoji 或占位图替换切图。
+- 不要省略任何可见的设计元素。
+- 不要在最终代码中保留蓝湖远程 CDN URL。
+
+### DOM 结构映射
+
+HTML 的 class 名称表达布局意图，需转译为目标框架组件，同时保持 CSS 值不变：
+
+- `flex-row` → 水平排列（React: `display:flex`，Flutter: `Row()`，SwiftUI: `HStack`）
+- `flex-col` → 垂直排列（React: `flex-direction:column`，Flutter: `Column()`，SwiftUI: `VStack`）
+- `justify-between` → 两端对齐（`space-between` / `MainAxisAlignment.spaceBetween`）
+- `relative` / `absolute` → 定位层叠（Flutter: `Stack` + `Positioned`，SwiftUI: `ZStack`）
+
+详细映射表见 `references/design-implementation-rules.md`。
+
+### 框架检测与代码生成
+
+实现 UI 前先检测项目类型（读取 `package.json`、`pubspec.yaml`、`build.gradle`、`Podfile` 等），生成匹配框架的代码（React JSX、Vue SFC、Flutter Widget、SwiftUI View、Android Compose 等）。CSS 属性需按平台做单位映射（px→dp/pt），但不能改变数值精度。未检测到框架时默认生成纯 HTML。各框架的 CSS 属性映射表和资源引用方式见 `references/design-implementation-rules.md`。
+
+### 生成后保真审计
+
+代码生成后必须逐属性对照设计规格 HTML+CSS 执行保真检查，覆盖 10 项：尺寸约束、裁剪、色值、渐变、绝对定位、字体、间距、图片资源、元素完整性、无远程 URL。对每个差异标注是平台适配还是错误，错误必须修正后交付。完整清单见 `references/design-implementation-rules.md`。
 
 ## 切图下载
 
@@ -78,12 +109,24 @@ node scripts/download_slices.mjs slices.json --output ./src/assets/images/slices
 
 脚本只负责稳定下载和基础去重。语义化命名应优先结合当前项目已有命名规范处理。
 
+### 切图下载前置步骤
+
+下载切图前，按以下顺序准备：
+
+1. **识别项目类型**：检查 `package.json`、`pubspec.yaml`、`*.xcodeproj`、`build.gradle` 等标志文件，判断 React/Vue/Flutter/iOS/Android。
+2. **确定输出目录**：用户指定 > 项目已有资源目录 > 通用默认路径。详细规则见 `references/design-implementation-rules.md`。
+3. **确认倍率**：用户不指定时推荐 Web 2x，但必须明确告知选择。
+4. **准备命名映射**：根据切图的 `layer_path`、`parent_name` 生成语义化英文文件名（`icon_`、`bg_`、`btn_` 等前缀），沿用项目已有命名风格。命名策略详见 `references/design-implementation-rules.md`。
+
 ## 完成检查
 
 交付前确认：
 
 - 已先运行 `get_designs.mjs` 并基于列表匹配目标设计图。
 - UI 实现已逐项核对 HTML+CSS 规格，没有用设计截图主观改值。
+- 已执行生成后保真审计（10 项清单），所有错误已修正，仅保留合理的平台适配差异。
+- 生成代码匹配检测到的项目框架，遵循项目已有约定（命名、目录、样式方案）。
 - 所有远程图片/切图已下载为本地资源，代码中没有蓝湖 CDN URL。
+- 图片资源使用目标框架约定的引用方式（如 React `import`、Flutter `AssetImage`）。
 - 切图下载数量、失败数量、输出目录已向用户说明。
 - 工作流中未出现认证错误。如果出现过，已引导用户刷新 Cookie 并重试。
