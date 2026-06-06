@@ -202,17 +202,82 @@ node scripts/download_slices.mjs slices.json --output ./app/src/main/res --scale
 
 脚本会按 `id`、`layer_path`、`name` 依次查找命名映射；没有映射时使用清理后的名称，若名称无法转为安全 ASCII，则使用 `slice_001`。
 
+## scripts/get_design_specs.mjs
+
+用途：获取设计规格 HTML+CSS，是 UI 实现的核心数据来源。优先从 DDS Schema API 获取精确的 flex 布局 HTML；DDS 不可用时自动降级为 Sketch JSON 生成标注 HTML。
+
+```bash
+node scripts/get_design_specs.mjs "https://lanhuapp.com/..." --design "首页设计"
+node scripts/get_design_specs.mjs "https://lanhuapp.com/..." --design 1 --output ./tmp/specs
+node scripts/get_design_specs.mjs "https://lanhuapp.com/..." --design "首页" --no-minify
+```
+
+参数：
+
+- `--design`：精确名称、唯一子串或列表序号。
+- `--output <dir>`：同时将 JSON 和 HTML 文件保存到目录（可选）。
+- `--no-minify`：保留 HTML 换行和缩进，便于调试。
+
+典型返回：
+
+```json
+{
+  "status": "success",
+  "source": "dds",
+  "design_name": "首页设计",
+  "canvas_size": { "width": 375, "height": 667 },
+  "html": "<!DOCTYPE html>...",
+  "design_tokens": "[shapePath] \"按钮背景\" @(12,340) 200x50\n  fill: linear-gradient(90deg, ...)",
+  "sketch_annotations": null,
+  "image_url_mapping": {
+    "./assets/slices/icon_home.png": "https://cdn.lanhuapp.com/..."
+  },
+  "total_images": 3,
+  "dds_error": null
+}
+```
+
+字段说明：
+
+- `source`：`"dds"` 表示主路径（精确 flex HTML），`"sketch"` 表示降级路径（绝对定位 HTML）。
+- `html`：完整 HTML+CSS 文档，是所有 CSS 属性值的权威来源。直接复用其中的颜色、字号、间距等值。
+- `design_tokens`：高风险元素标注（渐变、非均匀圆角、阴影、opacity<100），补充 HTML 中可能被合并的视觉信息。
+- `sketch_annotations`：仅 `source=sketch` 时有值，包含图层结构化标注。
+- `image_url_mapping`：本地路径 → 远程 CDN URL 映射表，用于后续下载图片资源。
+
+使用规则：
+
+- `html` 字段是 CSS 数值的唯一权威来源，必须直接复用，不能主观修改。
+- `image_url_mapping` 中的远程 URL 需要下载为本地资源，不能在最终代码中保留。
+- `source="sketch"` 时 HTML 用绝对定位，还原时注意转换为目标框架的布局方式。
+
 ## API 端点参考
 
 以下信息供调试和理解脚本行为使用，不需要直接调用。
+
+### 主路径：DDS Schema API
+
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `https://lanhuapp.com/api/project/multi_info` | GET | 获取项目信息，含各设计图的 `latest_version` |
+| `https://dds.lanhuapp.com/api/dds/image/store_schema_revise` | GET | 通过 `version_id` 获取 Schema JSON 的 CDN 地址 |
+| Schema JSON CDN URL（从上一步返回） | GET | 获取 DDS Schema（`className/style/props/children/type`） |
+
+DDS 专用请求头：
+
+- `Authorization`: `Basic dW5kZWZpbmVkOg==`（固定值）
+- `Referer`: `https://dds.lanhuapp.com/`
+- `Cookie`: `LANHU_COOKIE` 环境变量值
+
+### 降级路径：Sketch JSON API
 
 | 端点 | 方法 | 用途 |
 |------|------|------|
 | `https://lanhuapp.com/api/project/images` | GET | 获取项目设计图列表 |
 | `https://lanhuapp.com/api/project/image` | GET | 获取单个设计图详情（含 Sketch JSON URL） |
-| Sketch JSON URL（从 image 接口返回） | GET | 获取设计图图层数据，解析切图元数据 |
+| Sketch JSON URL（从 image 接口返回） | GET | 获取设计图图层数据（fills/borders/radius/shadows 等） |
 
-请求头（由 `lanhu-client.mjs` 自动设置）：
+通用请求头（由 `lanhu-client.mjs` 自动设置）：
 
 - `Cookie`: `LANHU_COOKIE` 环境变量值
 - `User-Agent`: Chrome 模拟

@@ -35,10 +35,12 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 | 脚本 | 用途 |
 |------|------|
 | `scripts/get_designs.mjs` | 列出蓝湖项目的设计图 |
-| `scripts/download_design_images.mjs` | 下载设计图原图到本地目录 |
+| `scripts/get_design_specs.mjs` | **获取设计规格 HTML+CSS（主路径：DDS Schema；降级：Sketch JSON）** |
+| `scripts/download_design_images.mjs` | 下载设计图原图到本地目录（视觉校验用） |
 | `scripts/get_design_slices.mjs` | 获取单个设计图的切图/素材元数据 |
 | `scripts/download_slices.mjs` | 从切图 JSON 批量下载切图文件 |
 | `scripts/lanhu-client.mjs` | 共享 HTTP 客户端模块（被上述脚本引用，不直接运行） |
+| `scripts/design-converter.mjs` | 纯转换模块（被 get_design_specs.mjs 引用，不直接运行） |
 
 ## 工作流
 
@@ -47,6 +49,7 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 2. 运行 `node scripts/get_designs.mjs <url>` 获取设计图列表。后续分析和切图都以这个列表里的 `index`、`name`、`id` 为准。
 3. 如果设计图很多，先让用户指定范围；如果用户已经明确说"全部"，再用 `all`。不要默认一次分析大量设计图。
 4. 查看或实现 UI 时，运行 `node scripts/download_design_images.mjs <url> --designs <names> --output <dir>` 下载设计图原图。`--designs` 支持序号（逗号分隔）、精确名称或 `all`。下载完成后用 Read 工具查看图片进行视觉分析。
+4.5. **获取设计规格 HTML+CSS**：运行 `node scripts/get_design_specs.mjs <url> --design <name_or_index>` 获取精确的 HTML+CSS 规格。返回的 `html` 字段是所有 CSS 属性值（颜色、字号、间距、渐变、圆角等）的唯一权威来源，必须直接复用，不得主观修改。`source="dds"` 表示从 DDS Schema 生成的高精度 flex 布局 HTML；`source="sketch"` 表示降级路径。`image_url_mapping` 列出需要下载的图片资源映射表。
 5. 下载切图、图标、图片素材时，运行 `node scripts/get_design_slices.mjs <url> --design <name>` 获取切图 JSON。单次只传一个设计图名称或序号。
 6. 下载前确认平台和倍率偏好。用户不指定时推荐 Web 2x，但仍要明确说明选择；常用键包括 `1x`、`2x`、`3x`、`ios_1x`、`ios_2x`、`ios_3x`、`android_mdpi`、`android_hdpi`、`android_xhdpi`、`android_xxhdpi`、`android_xxxhdpi`。
 7. 将步骤 5 的切图 JSON 输出保存为文件，然后运行 `node scripts/download_slices.mjs <json_file> --output <dir> --scale <scale>` 批量下载。识别当前项目资源目录和命名风格，执行后核对文件数量和失败列表。
@@ -57,9 +60,10 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 
 ### 数据来源优先级
 
-1. **HTML+CSS**：颜色、尺寸、间距、字体、圆角、渐变、定位等参数的唯一权威来源。必须直接复制精确的 CSS 属性值。
-2. **Design Tokens（切图元数据）**：补充 HTML+CSS 缺失的 `fills`、`borders`、`opacity`、`rotation`、`text_style`、`shadows`、`border_radius` 等信息。
-3. **设计图图片**：仅用于视觉核对，不覆盖 HTML+CSS 中的精确数值。
+1. **`get_design_specs.mjs` 输出的 `html` 字段**：颜色、尺寸、间距、字体、圆角、渐变、定位等参数的唯一权威来源。`source="dds"` 时为精确 flex 布局 HTML+CSS；`source="sketch"` 时为绝对定位标注 HTML。必须直接复制精确的 CSS 属性值，不得修改。
+2. **Design Tokens（`design_tokens` 字段）**：补充 HTML 中可能被合并的高风险视觉信息：渐变色值、非均匀圆角、阴影、opacity<100 等。
+3. **切图元数据（`get_design_slices.mjs` 的 `metadata`）**：补充 `fills`、`borders`、`opacity`、`rotation`、`text_style`、`shadows`、`border_radius` 等信息。
+4. **设计图原图**：仅用于视觉核对，不覆盖 HTML+CSS 中的精确数值。
 
 ### 禁止修改 CSS 值
 

@@ -4,6 +4,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 const BASE_URL = "https://lanhuapp.com";
+const DDS_BASE_URL = "https://dds.lanhuapp.com";
 const HTTP_TIMEOUT = Number(process.env.HTTP_TIMEOUT) || 30_000;
 
 const HEADERS = {
@@ -56,6 +57,102 @@ async function request(url, options = {}) {
 async function requestJson(url, options) {
   const response = await request(url, options);
   return response.json();
+}
+
+async function requestDdsJson(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": HEADERS["User-Agent"],
+        "Authorization": "Basic dW5kZWZpbmVkOg==",
+        "Referer": `${DDS_BASE_URL}/`,
+        "Accept": "application/json, text/plain, */*",
+        "Cookie": getCookie(),
+      },
+      redirect: "follow",
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`DDS 认证失败 (HTTP ${response.status})。LANHU_COOKIE 可能已过期。`);
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function getVersionId(url, designId) {
+  const params = parseUrl(url);
+  const qs = new URLSearchParams({
+    project_id: params.project_id,
+    img_limit: "500",
+    detach: "1",
+  });
+  if (params.team_id) qs.set("team_id", params.team_id);
+  const data = await requestJson(`${BASE_URL}/api/project/multi_info?${qs}`);
+  if (data.code !== "00000") throw new Error(`multi_info 失败: ${data.msg}`);
+  const images = (data.data || {}).images || [];
+  const img = images.find(i => String(i.id) === String(designId));
+  if (!img) throw new Error(`multi_info 中未找到 design id=${designId}`);
+  const versionId = img.latest_version || img.version_id;
+  if (!versionId) throw new Error(`design id=${designId} 没有 latest_version 字段`);
+  return String(versionId);
+}
+
+export async function getDdsSchema(versionId) {
+  const qs = new URLSearchParams({ version_id: versionId });
+  const data = await requestDdsJson(`${DDS_BASE_URL}/api/dds/image/store_schema_revise?${qs}`);
+  if (data.code !== "00000" && data.code !== 0) {
+    throw new Error(`store_schema_revise 失败 (code=${data.code}): ${data.msg || data.message || ""}`);
+  }
+  const resourceUrl = (data.data || {}).data_resource_url;
+  if (!resourceUrl) throw new Error("store_schema_revise 未返回 data_resource_url");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT);
+  try {
+    const resp = await fetch(resourceUrl, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`Schema CDN HTTP ${resp.status}`);
+    return resp.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function getDesignSchema(url, designName) {
+  const designsResult = await getDesigns(url);
+  if (designsResult.status !== "success") throw new Error(designsResult.message || "getDesigns 失败");
+  const design = matchDesign(designsResult.designs, designName);
+
+  const params = parseUrl(url);
+  const qs = new URLSearchParams({ dds_status: "1", image_id: design.id, project_id: params.project_id });
+  if (params.team_id) qs.set("team_id", params.team_id);
+  const imgData = await requestJson(`${BASE_URL}/api/project/image?${qs}`);
+  if (imgData.code !== "00000") throw new Error(`获取设计图详情失败: ${imgData.msg}`);
+  const latestVersion = (imgData.result.versions || [])[0];
+  if (!latestVersion) throw new Error("设计图没有版本信息");
+  const sketchData = await requestJson(latestVersion.json_url);
+  const designImageUrl = getDesignImageUrl(design);
+
+  let schema = null, ddsError = null;
+  try {
+    const versionId = await getVersionId(url, design.id);
+    schema = await getDdsSchema(versionId);
+  } catch (err) {
+    ddsError = err.message;
+  }
+
+  return {
+    schema,
+    sketchData,
+    design,
+    source: schema ? "dds" : "sketch",
+    ddsError,
+    designImageUrl,
+    canvasSize: { width: design.width, height: design.height },
+  };
 }
 
 export function parseUrl(url) {
