@@ -48,8 +48,13 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 1. 先判断用户给的是蓝湖 UI 设计项目链接，而不是需求文档链接。UI 设计项目通常是 `https://lanhuapp.com/web/#/item/project/stage?tid=xxx&pid=xxx`，必须有 `pid`，`tid` 可选；不要把带 `docId` 的 PRD 链接当设计稿处理。
 2. 运行 `node scripts/get_designs.mjs <url>` 获取设计图列表。后续分析和切图都以这个列表里的 `index`、`name`、`id` 为准。
 3. 如果设计图很多，先让用户指定范围；如果用户已经明确说"全部"，再用 `all`。不要默认一次分析大量设计图。
-4. 查看或实现 UI 时，运行 `node scripts/download_design_images.mjs <url> --designs <names> --output <dir>` 下载设计图原图。`--designs` 支持序号（逗号分隔）、精确名称或 `all`。下载完成后用 Read 工具查看图片进行视觉分析。
-4.5. **获取设计规格 HTML+CSS**：运行 `node scripts/get_design_specs.mjs <url> --design <name_or_index>` 获取精确的 HTML+CSS 规格。返回的 `html` 字段是所有 CSS 属性值（颜色、字号、间距、渐变、圆角等）的唯一权威来源，必须直接复用，不得主观修改。`source="dds"` 表示从 DDS Schema 生成的高精度 flex 布局 HTML；`source="sketch"` 表示降级路径。`image_url_mapping` 列出需要下载的图片资源映射表。
+4. **【还原 UI 的强制前置步骤】查看或实现 UI 前，必须先下载并用 Read 工具查看设计图原图**：运行 `node scripts/download_design_images.mjs <url> --designs <names> --output <dir>` 下载原图，`--designs` 支持序号（逗号分隔）、精确名称或 `all`，下载后用 Read 工具实际查看。不要跳过看图直接基于 HTML 规格还原——原图是布局、层级、视觉效果的最终核对依据，`source="sketch"` 降级时更是布局结构的主力参考。
+4.5. **获取设计规格 HTML+CSS**：运行 `node scripts/get_design_specs.mjs <url> --design <name_or_index>` 获取规格。返回的 `source` 字段决定数据权威性，必须先判断：
+   - `source="dds"`：从 DDS Schema 生成的高精度 flex 布局 HTML+CSS，`html` 字段是颜色、字号、间距、渐变、圆角、布局等所有参数的权威来源，直接复用、不得主观修改；原图用于核对布局是否错位。
+   - `source="sketch"`：降级路径，`html` 仅为绝对定位的元素清单，**不可当作布局权威**。此时以原图视觉为布局主力参考，以 `design_tokens` / `sketch_annotations` 的原始数值为精确数值来源。
+   - `image_url_mapping` 列出需要下载的图片资源映射表。若返回 `dds_error`，说明已降级到 sketch，应更依赖原图。
+   - 返回的 `source_guidance` 字段是针对当前 `source` 的数据权威性指引，直接按它执行。
+   - 加 `--output <dir> --download-images` 可在保存 HTML 的同时自动把引用图片下载到 `<dir>/assets/slices/`，使保存的 HTML 可直接在浏览器渲染核对。
 5. 下载切图、图标、图片素材时，运行 `node scripts/get_design_slices.mjs <url> --design <name>` 获取切图 JSON。单次只传一个设计图名称或序号。
 6. 下载前确认平台和倍率偏好。用户不指定时推荐 Web 2x，但仍要明确说明选择；常用键包括 `1x`、`2x`、`3x`、`ios_1x`、`ios_2x`、`ios_3x`、`android_mdpi`、`android_hdpi`、`android_xhdpi`、`android_xxhdpi`、`android_xxxhdpi`。
 7. 将步骤 5 的切图 JSON 输出保存为文件，然后运行 `node scripts/download_slices.mjs <json_file> --output <dir> --scale <scale>` 批量下载。识别当前项目资源目录和命名风格，执行后核对文件数量和失败列表。
@@ -58,12 +63,23 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 
 完整规则见 `references/design-implementation-rules.md`。以下是必须遵守的核心要求。
 
-### 数据来源优先级
+### 数据来源优先级（按 `get_design_specs.mjs` 返回的 `source` 分级）
 
-1. **`get_design_specs.mjs` 输出的 `html` 字段**：颜色、尺寸、间距、字体、圆角、渐变、定位等参数的唯一权威来源。`source="dds"` 时为精确 flex 布局 HTML+CSS；`source="sketch"` 时为绝对定位标注 HTML。必须直接复制精确的 CSS 属性值，不得修改。
-2. **Design Tokens（`design_tokens` 字段）**：补充 HTML 中可能被合并的高风险视觉信息：渐变色值、非均匀圆角、阴影、opacity<100 等。
-3. **切图元数据（`get_design_slices.mjs` 的 `metadata`）**：补充 `fills`、`borders`、`opacity`、`rotation`、`text_style`、`shadows`、`border_radius` 等信息。
-4. **设计图原图**：仅用于视觉核对，不覆盖 HTML+CSS 中的精确数值。
+还原前必须先看 `source` 字段，不同来源的权威性完全不同：
+
+**`source="dds"`（高保真，HTML 权威）：**
+
+1. **`html` 字段**：颜色、尺寸、间距、字体、圆角、渐变、定位、布局结构的权威来源。直接复制精确的 CSS 属性值，不得修改。
+2. **`design_tokens` 字段**：补充 HTML 中可能被合并的高风险视觉信息（复合渐变、非均匀圆角、阴影、opacity<100）。
+3. **设计图原图**：用于核对布局是否错位、元素是否齐全，不覆盖 HTML 数值。
+4. **切图元数据（`get_design_slices.mjs`）**：补充 `fills`、`borders`、`opacity`、`rotation`、`text_style`、`shadows`、`border_radius`。
+
+**`source="sketch"`（降级，原图为布局主力）：**
+
+1. **设计图原图**：布局结构、层级关系、视觉效果的主力参考。`html` 是扁平的绝对定位元素清单，**不能当作布局权威**，仅用于核对元素是否齐全。
+2. **`design_tokens` / `sketch_annotations` 字段**：颜色、字号、间距、圆角、阴影等精确数值的权威来源。
+3. **`html` 字段**：仅作元素清单和绝对定位参考，布局意图需结合原图重建。
+4. **切图元数据**：同上，补充视觉细节。
 
 ### 禁止修改 CSS 值
 
@@ -127,7 +143,8 @@ node scripts/download_slices.mjs slices.json --output ./src/assets/images/slices
 交付前确认：
 
 - 已先运行 `get_designs.mjs` 并基于列表匹配目标设计图。
-- UI 实现已逐项核对 HTML+CSS 规格，没有用设计截图主观改值。
+- 还原 UI 前已下载并用 Read 工具实际查看过设计图原图。
+- UI 实现已按 `source` 分级核对：`dds` 以 HTML+CSS 为权威，`sketch` 以原图布局 + `design_tokens` 数值为主，没有用设计截图主观改 DDS 的精确值。
 - 已执行生成后保真审计（10 项清单），所有错误已修正，仅保留合理的平台适配差异。
 - 生成代码匹配检测到的项目框架，遵循项目已有约定（命名、目录、样式方案）。
 - 所有远程图片/切图已下载为本地资源，代码中没有蓝湖 CDN URL。

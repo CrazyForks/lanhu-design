@@ -46,6 +46,101 @@ button:active {
 .align-end { display: flex; align-items: flex-end; }
 `;
 
+// ── Figma / Sketch 双格式归一化访问器 ─────────────────────────────────────────
+// 蓝湖新版导出 Figma 格式（artboard.origin="figma"），字段结构与旧 Sketch 不同。
+// 这些访问器优先读 Figma 字段，回退旧 Sketch 字段，使下游转换逻辑格式无关。
+
+function getFrame(layer) {
+  const f = layer.frame || layer.realFrame || {};
+  return {
+    left: layer.left ?? f.left ?? 0,
+    top: layer.top ?? f.top ?? 0,
+    width: layer.width ?? f.width ?? 0,
+    height: layer.height ?? f.height ?? 0,
+  };
+}
+
+// 归一化为 0-1。Figma opacity 本就是 0-1；旧 Sketch 是 0-100。
+function getOpacity(layer) {
+  const styleOp = layer.style?.opacity;
+  const raw = layer.opacity ?? styleOp;
+  if (raw === undefined || raw === null) return 1;
+  return raw > 1 ? raw / 100 : raw;
+}
+
+function getFills(layer) {
+  return layer.style?.fills ?? layer.fills ?? [];
+}
+
+function getBorders(layer) {
+  return layer.style?.borders ?? layer.borders ?? [];
+}
+
+function getShadows(layer) {
+  return layer.style?.shadows ?? layer.shadows ?? [];
+}
+
+// 颜色 → CSS。优先用 Figma 现成的 color.value（保真 rgba 字符串，符合不转换色值原则）。
+function colorToCss(color, alphaOverride) {
+  if (!color) return "transparent";
+  if (typeof color === "string") return color;
+  if (color.value && alphaOverride === undefined) return color.value;
+  // r/g/b 可能是 0-1（Figma/新 Sketch）或 0-255（旧）。>1 视为 0-255。
+  const norm = (v) => (v > 1 ? Math.round(v) : Math.round(v * 255));
+  const r = norm(color.r ?? color.red ?? 0);
+  const g = norm(color.g ?? color.green ?? 0);
+  const b = norm(color.b ?? color.blue ?? 0);
+  const a = alphaOverride ?? color.a ?? color.alpha ?? 1;
+  return a < 1 ? `rgba(${r}, ${g}, ${b}, ${a})` : `rgb(${r}, ${g}, ${b})`;
+}
+
+// Figma 的真实圆角常在 layer.paths[].radius，顶层 layer.radius 多为 0。
+// 取顶层 radius，若为空/全 0 则回退到第一个 path 的 radius。
+function getRadius(layer) {
+  const isNonZero = (r) => {
+    if (typeof r === "number") return r > 0;
+    if (Array.isArray(r)) return r.some((x) => x > 0);
+    if (r && typeof r === "object") return [r.topLeft, r.topRight, r.bottomRight, r.bottomLeft].some((x) => x > 0);
+    return false;
+  };
+  if (isNonZero(layer.radius)) return layer.radius;
+  for (const p of layer.paths || []) {
+    if (isNonZero(p.radius)) return p.radius;
+  }
+  return layer.radius;
+}
+
+// radius 可能是数字、数组、或 Figma 对象 {topLeft,topRight,bottomRight,bottomLeft}。
+function radiusToCss(radius) {
+  if (radius === undefined || radius === null) return "";
+  if (typeof radius === "number") return radius ? `border-radius: ${radius}px;` : "";
+  if (Array.isArray(radius)) {
+    if (new Set(radius).size === 1) return radius[0] ? `border-radius: ${radius[0]}px;` : "";
+    return `border-radius: ${radius.map((r) => `${r}px`).join(" ")};`;
+  }
+  if (typeof radius === "object") {
+    const tl = radius.topLeft ?? 0, tr = radius.topRight ?? 0;
+    const br = radius.bottomRight ?? 0, bl = radius.bottomLeft ?? 0;
+    if (tl === 0 && tr === 0 && br === 0 && bl === 0) return "";
+    return (tl === tr && tr === br && br === bl)
+      ? `border-radius: ${tl}px;`
+      : `border-radius: ${tl}px ${tr}px ${br}px ${bl}px;`;
+  }
+  return "";
+}
+
+// 类型归一：Figma 的 shapeLayer/textLayer/groupLayer/imageLayer → shape/text/group/image。
+function normType(layer) {
+  const t = String(layer.type || layer.ddsType || "").toLowerCase();
+  return t.replace(/layer$/, "");
+}
+
+function isLayerVisible(layer) {
+  return layer.visible !== false && layer.isVisible !== false;
+}
+
+// camelToKebab 在下方定义，这里仅声明顺序无关的纯函数。
+
 // ── CSS 辅助 ─────────────────────────────────────────────────────────────────
 
 function camelToKebab(s) {
@@ -242,77 +337,88 @@ const SKETCH_NOISE_TYPES = new Set(["artboard","page","symbolMaster","slice","MS
 
 export function extractDesignTokens(sketchData) {
   function getDims(obj) {
-    const f = obj.frame || obj.realFrame || {};
-    return [obj.left??f.left??0, obj.top??f.top??0, obj.width??f.width??0, obj.height??f.height??0];
+    const { left, top, width, height } = getFrame(obj);
+    return [left, top, width, height];
   }
   function simplifyFill(f) {
     if (!f || f.isEnabled === false) return null;
-    if (f.fillType === 1) {
+    if (f.fillType === 1 || f.type === "gradient") {
       const grad = f.gradient || {};
-      const stops = (grad.stops||[]).map(s => {
-        const c = s.color||{}; const r=Math.round(c.red??c.r??0),g=Math.round(c.green??c.g??0),b=Math.round(c.blue??c.b??0);
-        return `rgba(${r},${g},${b},${s.position??0})`;
-      }).join(", ");
-      const angle = grad.gradientType===0 ? `${Math.round(grad.rotation||0)}deg` : "to right";
-      return `linear-gradient(${angle}, ${stops})`;
+      const stops = (grad.stops||[]).map(s => `${colorToCss(s.color)} ${Math.round((s.position??0)*100)}%`).join(", ");
+      return `linear-gradient(${gradientAngle(grad)}, ${stops})`;
     }
-    const c = f.color||{}; if (!c||!Object.keys(c).length) return null;
-    const r=Math.round(c.red??c.r??0),g=Math.round(c.green??c.g??0),b=Math.round(c.blue??c.b??0),a=c.alpha??1;
-    return a<1 ? `rgba(${r},${g},${b},${a})` : `rgb(${r},${g},${b})`;
+    if (f.type === "image" || f.fillType === 2) return null;
+    if (!f.color) return null;
+    return colorToCss(f.color);
   }
   function simplifyBorder(b) {
     if (!b||b.isEnabled===false) return null;
-    const c=b.color||{}; const r=Math.round(c.red??c.r??0),g=Math.round(c.green??c.g??0),bv=Math.round(c.blue??c.b??0);
-    return `${b.thickness??b.width??1}px solid rgb(${r},${g},${bv})`;
+    return `${b.thickness??b.width??1}px solid ${colorToCss(b.color)}`;
   }
   function simplifyShadow(s) {
     if (!s||s.isEnabled===false) return null;
-    const c=s.color||{}; const r=Math.round(c.red??c.r??0),g=Math.round(c.green??c.g??0),b=Math.round(c.blue??c.b??0),a=c.alpha??1;
-    const col = a<1?`rgba(${r},${g},${b},${a})`:`rgb(${r},${g},${b})`;
-    return `${col} ${s.offsetX??s.x??0}px ${s.offsetY??s.y??0}px ${s.blurRadius??s.blur??0}px`;
+    return `${colorToCss(s.color)} ${s.offsetX??s.x??0}px ${s.offsetY??s.y??0}px ${s.blurRadius??s.blur??0}px`;
   }
   function hasOnlyTransparentSolid(fills) {
     if (!fills||!fills.length) return true;
-    return fills.every(f => f.isEnabled===false || (f.fillType===0 && (f.color?.alpha??1)===0));
+    return fills.every(f => f.isEnabled===false
+      || ((f.fillType===0||f.type==="color") && ((f.color?.alpha??f.color?.a??1)===0)));
+  }
+  function radiusIsNonUniform(radius) {
+    if (Array.isArray(radius)) return new Set(radius).size>1;
+    if (radius && typeof radius==="object") {
+      const v=[radius.topLeft??0,radius.topRight??0,radius.bottomRight??0,radius.bottomLeft??0];
+      return new Set(v).size>1 && v.some(x=>x>0);
+    }
+    return false;
   }
   function isHighRisk(obj) {
-    const t = (obj.type||obj.ddsType||"").toLowerCase();
+    const t = normType(obj);
     if (SKETCH_NOISE_TYPES.has(t)) return false;
     const [,,w,h] = getDims(obj);
     if (w<2&&h<2) return false;
-    const fills = obj.fills||[];
-    if (fills.some(f=>f.isEnabled!==false&&f.fillType===1)) return true;
-    if ((obj.borders||[]).some(b=>b.isEnabled!==false)) return true;
-    const radius = obj.radius;
-    if (Array.isArray(radius)&&new Set(radius).size>1) return true;
-    const op = obj.opacity;
-    if (op!==undefined&&op<100) {
-      if (hasOnlyTransparentSolid(fills)&&!(obj.borders||[]).length&&!(obj.shadows||[]).length) return false;
+    const fills = getFills(obj);
+    if (fills.some(f=>f.isEnabled!==false&&(f.fillType===1||f.type==="gradient"))) return true;
+    if (getBorders(obj).some(b=>b.isEnabled!==false)) return true;
+    if (radiusIsNonUniform(getRadius(obj))) return true;
+    const op = getOpacity(obj);
+    if (op<1) {
+      if (hasOnlyTransparentSolid(fills)&&!getBorders(obj).length&&!getShadows(obj).length) return false;
       return true;
     }
-    if ((obj.shadows||[]).some(s=>s.isEnabled!==false)) return true;
+    if (getShadows(obj).some(s=>s.isEnabled!==false)) return true;
     return false;
+  }
+  function radiusToken(radius) {
+    if (Array.isArray(radius)) return new Set(radius).size===1?radius[0]:JSON.stringify(radius);
+    if (radius && typeof radius==="object") {
+      const v=[radius.topLeft??0,radius.topRight??0,radius.bottomRight??0,radius.bottomLeft??0];
+      return new Set(v).size===1?v[0]:`${v[0]} ${v[1]} ${v[2]} ${v[3]}`;
+    }
+    return radius;
   }
   const tokens = [];
   function walk(obj, parentPath = "") {
-    if (!obj||typeof obj!=="object"||obj.isVisible===false) return;
+    if (!obj||typeof obj!=="object"||!isLayerVisible(obj)) return;
     const name = obj.name||"";
     const path = parentPath ? `${parentPath}/${name}` : name;
     if (isHighRisk(obj)) {
       const t = obj.type||obj.ddsType||"unknown";
       const [x,y,w,h] = getDims(obj);
       const lines = [`[${t}] "${name}" @(${Math.round(x)},${Math.round(y)}) ${Math.round(w)}x${Math.round(h)}${parentPath?`  path: ${path}`:""}`];
-      const radius = obj.radius;
-      if (radius!==undefined) lines.push(`  radius: ${Array.isArray(radius)?(new Set(radius).size===1?radius[0]:JSON.stringify(radius)):radius}`);
-      for (const f of obj.fills||[]) { const s=simplifyFill(f); if(s) lines.push(`  fill: ${s}`); }
-      for (const b of obj.borders||[]) { const s=simplifyBorder(b); if(s) lines.push(`  border: ${s}`); }
-      if (obj.opacity!==undefined&&obj.opacity<100) lines.push(`  opacity: ${obj.opacity}%`);
-      for (const sh of obj.shadows||[]) { const s=simplifyShadow(sh); if(s) lines.push(`  shadow: ${s}`); }
+      const rad = getRadius(obj);
+      if (rad!==undefined) { const rt=radiusToken(rad); if(rt) lines.push(`  radius: ${rt}`); }
+      for (const f of getFills(obj)) { const s=simplifyFill(f); if(s) lines.push(`  fill: ${s}`); }
+      for (const b of getBorders(obj)) { const s=simplifyBorder(b); if(s) lines.push(`  border: ${s}`); }
+      const op = getOpacity(obj);
+      if (op<1) lines.push(`  opacity: ${op}`);
+      for (const sh of getShadows(obj)) { const s=simplifyShadow(sh); if(s) lines.push(`  shadow: ${s}`); }
       tokens.push(lines.join("\n"));
     }
     for (const child of obj.layers||[]) walk(child, path);
   }
-  if (sketchData.artboard?.layers) { for (const l of sketchData.artboard.layers) walk(l); }
+  const root = sketchData.artboard || (sketchData.info && sketchData.info[0]);
+  if (root?.layers) { for (const l of root.layers) walk(l); }
   else if (sketchData.info) {
     for (const item of sketchData.info) {
       walk(item);
@@ -332,10 +438,21 @@ export function extractDesignTokens(sketchData) {
 const SKETCH_SKIP_TYPES = new Set(["artboard","page","symbolMaster","slice","MSImmutableHotspotLayer","hotspot","group"]);
 
 function sketchColor(c, alpha) {
-  if (!c) return "transparent";
-  const a = alpha ?? c.alpha ?? 1;
-  const r=Math.round((c.red??c.r??0)*255), g=Math.round((c.green??c.g??0)*255), b=Math.round((c.blue??c.b??0)*255);
-  return a < 1 ? `rgba(${r},${g},${b},${a})` : `rgb(${r},${g},${b})`;
+  // 兼容旧调用签名：旧 Sketch 的 r/g/b 是 0-1，需 *255；新格式走 colorToCss 的 value/归一逻辑。
+  return colorToCss(c, alpha);
+}
+
+// 从 Figma 渐变的 from/to 归一化坐标点计算 CSS 角度。
+function gradientAngle(grad) {
+  if (grad.from && grad.to) {
+    const dx = grad.to.x - grad.from.x;
+    const dy = grad.to.y - grad.from.y;
+    // CSS 角度：0deg 朝上，顺时针。atan2 的 0 朝右、逆时针，故换算 90 - 角度。
+    const deg = Math.round((Math.atan2(dy, dx) * 180) / Math.PI + 90);
+    return `${((deg % 360) + 360) % 360}deg`;
+  }
+  if (grad.gradientType === 0 && grad.rotation !== undefined) return `${Math.round(grad.rotation)}deg`;
+  return "to right";
 }
 
 function sketchFillCss(fills) {
@@ -343,16 +460,16 @@ function sketchFillCss(fills) {
   const enabled = fills.filter(f => f.isEnabled !== false);
   if (!enabled.length) return "";
   const f = enabled[enabled.length - 1];
-  if (f.fillType === 1) {
+  if (f.fillType === 1 || f.type === "gradient") {
     const grad = f.gradient || {};
     const stops = (grad.stops || []).map(s => {
       const pct = Math.round((s.position || 0) * 100);
-      return `${sketchColor(s.color)} ${pct}%`;
+      return `${colorToCss(s.color)} ${pct}%`;
     }).join(", ");
-    const angle = grad.gradientType === 0 ? `${Math.round(grad.rotation || 0)}deg` : "to right";
-    return `background: linear-gradient(${angle}, ${stops});`;
+    return `background: linear-gradient(${gradientAngle(grad)}, ${stops});`;
   }
-  return `background-color: ${sketchColor(f.color)};`;
+  if (f.type === "image" || f.fillType === 2) return ""; // 图片填充由切图/原图处理
+  return `background-color: ${colorToCss(f.color)};`;
 }
 
 function sketchBorderCss(borders) {
@@ -360,16 +477,11 @@ function sketchBorderCss(borders) {
   const b = borders.find(b => b.isEnabled !== false);
   if (!b) return "";
   const w = b.thickness ?? b.width ?? 1;
-  return `border: ${w}px solid ${sketchColor(b.color)};`;
+  return `border: ${w}px solid ${colorToCss(b.color)};`;
 }
 
 function sketchRadiusCss(radius) {
-  if (radius === undefined || radius === null) return "";
-  if (Array.isArray(radius)) {
-    if (new Set(radius).size === 1) return radius[0] ? `border-radius: ${radius[0]}px;` : "";
-    return `border-radius: ${radius.map(r => `${r}px`).join(" ")};`;
-  }
-  return radius ? `border-radius: ${radius}px;` : "";
+  return radiusToCss(radius);
 }
 
 function sketchShadowCss(shadows) {
@@ -378,20 +490,34 @@ function sketchShadowCss(shadows) {
   if (!enabled.length) return "";
   const parts = enabled.map(s => {
     const x=s.offsetX??s.x??0, y=s.offsetY??s.y??0, blur=s.blurRadius??s.blur??0, spread=s.spread??0;
-    return `${x}px ${y}px ${blur}px ${spread}px ${sketchColor(s.color)}`;
+    return `${x}px ${y}px ${blur}px ${spread}px ${colorToCss(s.color)}`;
   });
   return `box-shadow: ${parts.join(", ")};`;
 }
 
 function sketchTextCss(obj) {
-  const ta = obj.textAlignment || obj.style?.textAlignment;
-  const map = {0:"left",1:"right",2:"center",3:"justify"};
   const parts = [];
+  // Figma：text.style.font + text.style.color；旧 Sketch：textStyle/style.textStyle。
+  const figmaText = obj.text?.style;
+  const font = figmaText?.font;
+  if (font) {
+    const alignMap = { left:"left", right:"right", center:"center", justify:"justify" };
+    if (alignMap[font.align]) parts.push(`text-align: ${alignMap[font.align]};`);
+    if (font.size) parts.push(`font-size: ${font.size}px;`);
+    if (font.fontWeight) parts.push(`font-weight: ${font.fontWeight};`);
+    if (font.name) parts.push(`font-family: ${font.name};`);
+    if (font.lineHeight?.value) parts.push(`line-height: ${font.lineHeight.value}px;`);
+    if (font.letterSpacing?.value) parts.push(`letter-spacing: ${font.letterSpacing.value}px;`);
+    if (figmaText.color) parts.push(`color: ${colorToCss(figmaText.color)};`);
+    return parts.join(" ");
+  }
+  const ta = obj.textAlignment ?? obj.style?.textAlignment;
+  const map = {0:"left",1:"right",2:"center",3:"justify"};
   if (map[ta]) parts.push(`text-align: ${map[ta]};`);
   const ts = obj.textStyle || obj.style?.textStyle || {};
   if (ts.fontSize) parts.push(`font-size: ${ts.fontSize}px;`);
   if (ts.fontWeight) parts.push(`font-weight: ${ts.fontWeight};`);
-  if (ts.color) parts.push(`color: ${sketchColor(ts.color)};`);
+  if (ts.color) parts.push(`color: ${colorToCss(ts.color)};`);
   if (ts.lineHeight) parts.push(`line-height: ${ts.lineHeight}px;`);
   if (ts.letterSpacing) parts.push(`letter-spacing: ${ts.letterSpacing}px;`);
   return parts.join(" ");
@@ -399,25 +525,21 @@ function sketchTextCss(obj) {
 
 function getSketchLayerCss(layer, scale) {
   const sc = scale || 1;
-  const f = layer.frame || layer.realFrame || {};
-  const left = Math.round((layer.left ?? f.left ?? 0) / sc);
-  const top = Math.round((layer.top ?? f.top ?? 0) / sc);
-  const w = Math.round((layer.width ?? f.width ?? 0) / sc);
-  const h = Math.round((layer.height ?? f.height ?? 0) / sc);
+  const { left, top, width, height } = getFrame(layer);
   const parts = [
-    `position: absolute; left: ${left}px; top: ${top}px; width: ${w}px; height: ${h}px;`,
+    `position: absolute; left: ${Math.round(left / sc)}px; top: ${Math.round(top / sc)}px; width: ${Math.round(width / sc)}px; height: ${Math.round(height / sc)}px;`,
   ];
-  const fills = layer.fills || [];
-  const fillCss = sketchFillCss(fills);
+  const fillCss = sketchFillCss(getFills(layer));
   if (fillCss) parts.push(fillCss);
-  const borderCss = sketchBorderCss(layer.borders || []);
+  const borderCss = sketchBorderCss(getBorders(layer));
   if (borderCss) parts.push(borderCss);
-  const radCss = sketchRadiusCss(layer.radius);
+  const radCss = sketchRadiusCss(getRadius(layer));
   if (radCss) parts.push(radCss);
-  const shadowCss = sketchShadowCss(layer.shadows || []);
+  const shadowCss = sketchShadowCss(getShadows(layer));
   if (shadowCss) parts.push(shadowCss);
-  if (layer.opacity !== undefined && layer.opacity < 100) parts.push(`opacity: ${layer.opacity / 100};`);
-  const t = (layer.type || layer.ddsType || "").toLowerCase();
+  const op = getOpacity(layer);
+  if (op < 1) parts.push(`opacity: ${op};`);
+  const t = normType(layer);
   if (t === "text" || t === "shapepath" || t === "shape") {
     const txt = sketchTextCss(layer);
     if (txt) parts.push(txt);
@@ -425,46 +547,74 @@ function getSketchLayerCss(layer, scale) {
   return parts.join(" ");
 }
 
+// 取图片层的图片 URL。Figma：层带 image.{imageUrl,svgUrl}（hasExportImage 导出切片）。
+function getImageSrc(layer) {
+  const img = layer.image;
+  if (img && typeof img === "object") return img.imageUrl || img.svgUrl || "";
+  return layer.imageUrl || layer.svgUrl || layer.src || "";
+}
+
 function isImageLayer(layer) {
-  const t = (layer.type || layer.ddsType || "").toLowerCase();
-  return t === "bitmap" || t === "image" || (layer.imageData && !layer.layers);
+  // Figma：hasExportImage=true 且带 image.imageUrl，整层已被导出为一张切片图。
+  if (layer.hasExportImage && layer.image?.imageUrl) return true;
+  const t = normType(layer);
+  if (t === "bitmap" || t === "image") return true;
+  if (layer.imageData && !layer.layers?.length) return true;
+  // Figma：style.fills 含 image 类型填充
+  return getFills(layer).some(f => f.type === "image" || f.fillType === 2);
 }
 
 function isTextLayer(layer) {
-  const t = (layer.type || layer.ddsType || "").toLowerCase();
-  return t === "text";
+  return normType(layer) === "text";
 }
 
 function getTextContent(layer) {
-  return layer.content || layer.value || layer.attributedString?.string || layer.name || "";
+  return layer.text?.value
+    || layer.text?.style?.content
+    || layer.content
+    || layer.value
+    || layer.attributedString?.string
+    || layer.name
+    || "";
 }
 
 function safeCls(name) {
   return String(name || "").replace(/[^A-Za-z0-9_-]/g, "_").replace(/^[^A-Za-z]/, "l$&");
 }
 
+// Figma 子图层 frame 是绝对画板坐标（实测：Battery@(672,35) 的子 Border 也是 @(672,35)），
+// 因此扁平化渲染——所有可见叶子层作为画板直接子元素绝对定位，容器层只递归不包裹，避免双重偏移。
 function sketchLayersToHtml(layers, scale, indent) {
   const sp = " ".repeat(indent);
   const parts = [];
   for (const layer of layers || []) {
-    if (layer.isVisible === false) continue;
-    const t = (layer.type || layer.ddsType || "").toLowerCase();
-    if (SKETCH_SKIP_TYPES.has(t) && !layer.layers) continue;
+    if (!isLayerVisible(layer)) continue;
+    const t = normType(layer);
+    const hasChildren = Array.isArray(layer.layers) && layer.layers.length > 0;
+    const isContainer = hasChildren && !isImageLayer(layer) && !isTextLayer(layer);
+
+    // 纯容器（group/artboard 等）：不渲染自身包裹，直接递归子层（坐标已是绝对值）。
+    if (isContainer && SKETCH_SKIP_TYPES.has(t)) {
+      const inner = sketchLayersToHtml(layer.layers, scale, indent);
+      if (inner) parts.push(inner);
+      continue;
+    }
+
     const css = getSketchLayerCss(layer, scale);
     const cls = safeCls(layer.name);
+    const styleAttr = css.replace(/"/g, "'");
     if (isImageLayer(layer)) {
-      const src = layer.imageUrl || layer.src || "";
-      parts.push(`${sp}<img class="${cls}" referrerpolicy="no-referrer" src="${src}" data-css="${css.replace(/"/g,"'")}" />`);
+      // 图片层整体已被导出为一张切片图，用 image.imageUrl，不再递归子层。
+      const src = getImageSrc(layer);
+      parts.push(`${sp}<img class="${cls}" referrerpolicy="no-referrer" src="${src}" style="${styleAttr}" />`);
     } else if (isTextLayer(layer)) {
       const text = getTextContent(layer);
-      parts.push(`${sp}<span class="${cls}" data-css="${css.replace(/"/g,"'")}">${text}</span>`);
+      parts.push(`${sp}<span class="${cls}" style="${styleAttr}">${text}</span>`);
     } else {
-      const children = layer.layers ? sketchLayersToHtml(layer.layers, scale, indent + 2) : "";
-      if (children) {
-        parts.push(`${sp}<div class="${cls}" data-css="${css.replace(/"/g,"'")}">\n${children}\n${sp}</div>`);
-      } else {
-        parts.push(`${sp}<div class="${cls}" data-css="${css.replace(/"/g,"'")}">\n${sp}</div>`);
-      }
+      // 有样式的非容器层（含带子层的非 skip 类型）：渲染自身 + 递归子层（子层同为绝对坐标，平级排列）。
+      const inner = hasChildren ? sketchLayersToHtml(layer.layers, scale, indent) : "";
+      parts.push(`${sp}<div class="${cls}" style="${styleAttr}"></div>`);
+      if (inner) parts.push(inner);
     }
   }
   return parts.join("\n");
@@ -474,16 +624,12 @@ export function convertSketchToHtml(sketchData, designScale, designImgUrl) {
   const sc = designScale || 1;
   let artboardW = 375, artboardH = 667;
   let layers = [];
-  if (sketchData.artboard) {
-    const ab = sketchData.artboard;
-    artboardW = Math.round((ab.width ?? ab.frame?.width ?? 375) / sc);
-    artboardH = Math.round((ab.height ?? ab.frame?.height ?? 667) / sc);
-    layers = ab.layers || [];
-  } else if (sketchData.info && sketchData.info.length) {
-    const first = sketchData.info[0];
-    artboardW = Math.round((first.width ?? first.frame?.width ?? 375) / sc);
-    artboardH = Math.round((first.height ?? first.frame?.height ?? 667) / sc);
-    layers = first.layers || [];
+  const root = sketchData.artboard || (sketchData.info && sketchData.info[0]);
+  if (root) {
+    const fr = getFrame(root);
+    artboardW = Math.round((fr.width || 375) / sc);
+    artboardH = Math.round((fr.height || 667) / sc);
+    layers = root.layers || [];
   }
   const body = sketchLayersToHtml(layers, sc, 4);
   const bgStyle = designImgUrl
@@ -511,27 +657,28 @@ ${body}
 // ── Sketch 结构化标注（降级路径文本输出） ─────────────────────────────────────
 
 function annotateLayer(layer, scale, depth, lines) {
-  if (!layer || layer.isVisible === false) return;
+  if (!layer || !isLayerVisible(layer)) return;
   const sc = scale || 1;
   const sp = "  ".repeat(depth);
-  const f = layer.frame || layer.realFrame || {};
-  const x = Math.round((layer.left ?? f.left ?? 0) / sc);
-  const y = Math.round((layer.top ?? f.top ?? 0) / sc);
-  const w = Math.round((layer.width ?? f.width ?? 0) / sc);
-  const h = Math.round((layer.height ?? f.height ?? 0) / sc);
+  const { left, top, width, height } = getFrame(layer);
+  const x = Math.round(left / sc);
+  const y = Math.round(top / sc);
+  const w = Math.round(width / sc);
+  const h = Math.round(height / sc);
   const name = layer.name || "(unnamed)";
   const t = layer.type || layer.ddsType || "unknown";
   const cssParts = [];
   cssParts.push(`left: ${x}px; top: ${y}px; width: ${w}px; height: ${h}px`);
-  const fillCss = sketchFillCss(layer.fills || []);
+  const fillCss = sketchFillCss(getFills(layer));
   if (fillCss) cssParts.push(fillCss.replace(/;$/, ""));
-  const borderCss = sketchBorderCss(layer.borders || []);
+  const borderCss = sketchBorderCss(getBorders(layer));
   if (borderCss) cssParts.push(borderCss.replace(/;$/, ""));
-  const radCss = sketchRadiusCss(layer.radius);
+  const radCss = sketchRadiusCss(getRadius(layer));
   if (radCss) cssParts.push(radCss.replace(/;$/, ""));
-  const shadowCss = sketchShadowCss(layer.shadows || []);
+  const shadowCss = sketchShadowCss(getShadows(layer));
   if (shadowCss) cssParts.push(shadowCss.replace(/;$/, ""));
-  if (layer.opacity !== undefined && layer.opacity < 100) cssParts.push(`opacity: ${layer.opacity / 100}`);
+  const op = getOpacity(layer);
+  if (op < 1) cssParts.push(`opacity: ${op}`);
   if (isTextLayer(layer)) {
     const txt = sketchTextCss(layer).replace(/;/g, "").trim();
     if (txt) cssParts.push(txt);
@@ -545,12 +692,8 @@ function annotateLayer(layer, scale, depth, lines) {
 export function extractFullAnnotationsFromSketch(sketchData, designScale) {
   const sc = designScale || 1;
   const lines = [];
-  let layers = [];
-  if (sketchData.artboard) {
-    layers = sketchData.artboard.layers || [];
-  } else if (sketchData.info && sketchData.info.length) {
-    layers = sketchData.info[0].layers || [];
-  }
+  const root = sketchData.artboard || (sketchData.info && sketchData.info[0]);
+  const layers = root?.layers || [];
   for (const layer of layers) annotateLayer(layer, sc, 0, lines);
   return lines.join("\n");
 }
