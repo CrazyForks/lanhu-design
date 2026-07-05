@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   convertLanhuToHtml,
   convertSketchToHtml,
+  localizeImageUrls,
 } from "../skills/lanhu-design/scripts/design-converter.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +40,19 @@ function checkHtmlEscaping() {
   });
   assert.match(sketchHtml, /&lt;i&gt;Hello&lt;\/i&gt;/);
   assert.doesNotMatch(sketchHtml, /<i>Hello<\/i>/);
+}
+
+function checkImageLocalization() {
+  const { html, mapping } = localizeImageUrls(
+    '<style>.hero { background-image: url("https://cdn.test/bg.png?token=1"); }</style>' +
+      '<img class="icon_main" src="https://cdn.test/icon.svg?token=2" />',
+    "首页",
+  );
+  assert.doesNotMatch(html, /https:\/\/cdn\.test/);
+  assert.match(html, /url\("\.\/assets\/slices\/hero\.png"\)/);
+  assert.match(html, /src="\.\/assets\/slices\/icon_main\.svg"/);
+  assert.equal(mapping["./assets/slices/hero.png"], "https://cdn.test/bg.png?token=1");
+  assert.equal(mapping["./assets/slices/icon_main.svg"], "https://cdn.test/icon.svg?token=2");
 }
 
 async function checkSliceDeduping() {
@@ -71,6 +85,12 @@ async function checkSliceDeduping() {
             {
               id: "g1",
               name: "Group",
+              fills: [
+                {
+                  type: "image",
+                  image: { imageUrl: "https://cdn.test/not-a-slice.png", size: { width: 20, height: 20 } },
+                },
+              ],
               layers: [
                 {
                   id: "s1",
@@ -97,6 +117,9 @@ async function checkSliceDeduping() {
     );
     assert.equal(result.total_slices, 1);
     assert.equal(result.slices[0].layer_path, "Artboard/Group/Icon");
+    assert.equal(result.slices[0].scale_urls["2x"], "https://cdn.test/icon.png");
+    assert.match(result.slices[0].scale_urls["1x"], /w_10,h_10/);
+    assert.deepEqual(result.slices[0].logical_size.width, 10);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -143,6 +166,7 @@ async function checkScaleFallback() {
 }
 
 checkHtmlEscaping();
+checkImageLocalization();
 await checkSliceDeduping();
 await checkScaleFallback();
 console.log("self_check passed");

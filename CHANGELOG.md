@@ -6,5 +6,7 @@
 - 将自检脚本移动到 `tests/self_check.mjs`，并更新本地校验命令。
 - 修复遍历蓝湖嵌套图层数据时重复提取切图的问题。
 - 在 DDS 和 Sketch/Figma 转换输出中转义生成的 HTML 文本和属性。
+- `get_design_slices.mjs` 现在会根据切图逻辑尺寸生成 Web/iOS/Android 多倍率 `scale_urls`。
+- `get_design_specs.mjs` 的图片本地化现在同时覆盖 `<img src>` 和 CSS `url(...)` 背景资源。
 - 非 2x 与多密度切图下载必须使用真实的 `scale_urls`，不再把同一个 `download_url` 复制成多倍率文件。
 - 忽略 `.env` 和 `.claude/settings.json` 等本地敏感配置文件。

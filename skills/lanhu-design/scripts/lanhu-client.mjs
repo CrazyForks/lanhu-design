@@ -251,6 +251,75 @@ function matchDesign(designs, nameOrIndex) {
   );
 }
 
+function jsRound(value) {
+  return Math.floor(Number(value) + 0.5);
+}
+
+function parseSize(size) {
+  if (!size) return { width: 0, height: 0 };
+  if (typeof size === "object") {
+    return {
+      width: Number(size.width || size.w || 0),
+      height: Number(size.height || size.h || 0),
+    };
+  }
+  const match = String(size).match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+  return match
+    ? { width: Number(match[1]), height: Number(match[2]) }
+    : { width: 0, height: 0 };
+}
+
+function frameSize(obj) {
+  const frame = obj.frame || obj.bounds || {};
+  return {
+    width: Number(frame.width || obj.width || 0),
+    height: Number(frame.height || obj.height || 0),
+  };
+}
+
+function resizeUrl(imageUrl, width, height, storedWidth, storedHeight) {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  if (w === storedWidth && h === storedHeight) return imageUrl;
+  const separator = imageUrl.includes("?") ? "&" : "?";
+  return `${imageUrl}${separator}x-oss-process=image/resize,w_${w},h_${h}/format,png`;
+}
+
+function buildScaleUrls(imageUrl, logicalWidth, logicalHeight, sliceScale) {
+  if (!imageUrl || !logicalWidth || !logicalHeight) return {};
+  const scale = Number(sliceScale) || 2;
+  const lw = Math.max(1, Math.round(logicalWidth));
+  const lh = Math.max(1, Math.round(logicalHeight));
+  const storedWidth = lw * scale;
+  const storedHeight = lh * scale;
+  const makeUrl = (width, height) => resizeUrl(imageUrl, width, height, storedWidth, storedHeight);
+
+  return {
+    "1x": makeUrl(lw, lh),
+    "2x": makeUrl(lw * 2, lh * 2),
+    "3x": makeUrl(lw * 3, lh * 3),
+    ios_1x: makeUrl(jsRound(storedWidth / 4), jsRound(storedHeight / 4)),
+    ios_2x: makeUrl(jsRound(storedWidth / 2), jsRound(storedHeight / 2)),
+    ios_3x: makeUrl(jsRound((storedWidth / 4) * 3), jsRound((storedHeight / 4) * 3)),
+    android_mdpi: makeUrl(jsRound(storedWidth / 4), jsRound(storedHeight / 4)),
+    android_hdpi: makeUrl(jsRound((storedWidth / 4) * 1.5), jsRound((storedHeight / 4) * 1.5)),
+    android_xhdpi: makeUrl(jsRound(storedWidth / 2), jsRound(storedHeight / 2)),
+    android_xxhdpi: makeUrl(jsRound((storedWidth / 4) * 3), jsRound((storedHeight / 4) * 3)),
+    android_xxxhdpi: makeUrl(storedWidth, storedHeight),
+  };
+}
+
+function addScaleUrls(sliceInfo, imageUrl, logicalSize, sliceScale) {
+  const { width, height } = logicalSize;
+  if (!imageUrl || !width || !height) return;
+  sliceInfo.scale_urls = buildScaleUrls(imageUrl, width, height, sliceScale);
+  sliceInfo.logical_size = {
+    width: Math.round(width),
+    height: Math.round(height),
+    note: `1x logical px; stored at ${sliceScale}x = ${Math.round(width * sliceScale)}x${Math.round(height * sliceScale)}px`,
+  };
+}
+
 export async function getDesignSlicesInfo(
   url,
   designName,
@@ -282,6 +351,15 @@ export async function getDesignSlicesInfo(
   const jsonUrl = latestVersion.json_url;
 
   const sketchData = await requestJson(jsonUrl);
+  const meta = sketchData.meta || {};
+  const sliceScale = Number.parseInt(
+    sketchData.sliceScale || sketchData.exportScale || meta.sliceScale || "2",
+    10,
+  ) || 2;
+  const hostName = (meta.host || {}).name || "";
+  const isFigma =
+    hostName.toLowerCase() === "figma" ||
+    String(sketchData.artboard?.origin || "").toLowerCase() === "figma";
 
   const slices = [];
   const seenSlices = new Set();
@@ -294,14 +372,95 @@ export async function getDesignSlicesInfo(
       ? `${layerPath}/${currentName}`
       : currentName;
 
-    if (obj.ddsImage && obj.ddsImage.imageUrl) {
+    const looksLikeLayer =
+      obj.hasExportImage ||
+      obj.layerType ||
+      obj.ddsType ||
+      obj.id ||
+      obj.name ||
+      obj.frame ||
+      obj.bounds ||
+      "left" in obj ||
+      "top" in obj ||
+      "width" in obj ||
+      "height" in obj;
+    if (looksLikeLayer && obj.image && (obj.image.imageUrl || obj.image.svgUrl)) {
+      if (isFigma && !obj.hasExportImage) {
+        // Figma 图片填充层不是切图，继续递归子层。
+      } else {
+        const image = obj.image;
+        const downloadUrl = image.imageUrl || image.svgUrl;
+        const parsedSize = parseSize(image.size);
+        const fallbackSize = frameSize(obj);
+        const logicalSize = {
+          width: parsedSize.width || fallbackSize.width,
+          height: parsedSize.height || fallbackSize.height,
+        };
+        const sizeText = logicalSize.width && logicalSize.height
+          ? `${Math.round(logicalSize.width)}x${Math.round(logicalSize.height)}`
+          : "unknown";
+        const sliceInfo = {
+          id: obj.id,
+          name: currentName,
+          type: obj.type || obj.layerType || "bitmap",
+          download_url: downloadUrl,
+          size: sizeText,
+          format: image.imageUrl ? "png" : "svg",
+        };
+
+        if (image.svgUrl && image.imageUrl) sliceInfo.svg_url = image.svgUrl;
+        if (image.imageUrl) addScaleUrls(sliceInfo, image.imageUrl, logicalSize, sliceScale);
+
+        const frame = obj.frame || obj.bounds || {};
+        const x = frame.x ?? frame.left ?? obj.left;
+        const y = frame.y ?? frame.top ?? obj.top;
+        if (x !== undefined || y !== undefined) {
+          sliceInfo.position = {
+            x: Math.round(Number(x) || 0),
+            y: Math.round(Number(y) || 0),
+          };
+        }
+
+        if (parentName) sliceInfo.parent_name = parentName;
+        sliceInfo.layer_path = currentPath;
+
+        if (includeMetadata) {
+          const metadata = {};
+          if (obj.fills) metadata.fills = obj.fills;
+          if (obj.borders || obj.strokes) metadata.borders = obj.borders || obj.strokes;
+          if ("opacity" in obj) metadata.opacity = obj.opacity;
+          if (obj.rotation) metadata.rotation = obj.rotation;
+          if (obj.textStyle) metadata.text_style = obj.textStyle;
+          if (obj.shadows) metadata.shadows = obj.shadows;
+          if (obj.radius || obj.cornerRadius) metadata.border_radius = obj.radius || obj.cornerRadius;
+          if (Object.keys(metadata).length > 0) sliceInfo.metadata = metadata;
+        }
+
+        const sliceKey = obj.id ? `id:${obj.id}` : `${downloadUrl}|${currentPath}`;
+        if (!seenSlices.has(sliceKey)) {
+          seenSlices.add(sliceKey);
+          slices.push(sliceInfo);
+        }
+      }
+    } else if (obj.ddsImage && obj.ddsImage.imageUrl && !isFigma) {
+      const parsedSize = parseSize(obj.ddsImage.size);
+      const fallbackSize = frameSize(obj);
+      const logicalSize = {
+        width: parsedSize.width || fallbackSize.width,
+        height: parsedSize.height || fallbackSize.height,
+      };
+      const sizeText = logicalSize.width && logicalSize.height
+        ? `${Math.round(logicalSize.width)}x${Math.round(logicalSize.height)}`
+        : String(obj.ddsImage.size || "unknown");
       const sliceInfo = {
         id: obj.id,
         name: currentName,
         type: obj.type || obj.ddsType,
         download_url: obj.ddsImage.imageUrl,
-        size: obj.ddsImage.size,
+        size: sizeText,
+        format: "png",
       };
+      addScaleUrls(sliceInfo, obj.ddsImage.imageUrl, logicalSize, sliceScale);
 
       if ("left" in obj && "top" in obj) {
         sliceInfo.position = {
@@ -341,7 +500,7 @@ export async function getDesignSlicesInfo(
     }
 
     for (const value of Object.values(obj)) {
-      if (value === obj.layers || value === obj.ddsImage) continue;
+      if (value === obj.layers || value === obj.ddsImage || value === obj.image) continue;
       if (typeof value === "object" && value !== null && value !== obj) {
         if (Array.isArray(value)) {
           for (const item of value) {

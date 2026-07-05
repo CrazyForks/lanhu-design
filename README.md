@@ -185,7 +185,9 @@ AI 会自动：
 | iOS | `ios_1x`、`ios_2x`、`ios_3x`，或 `ios-all` |
 | Android | `android_mdpi` … `android_xxxhdpi`，或 `android-all` |
 
-> `download_url` 只作为默认 Web 2x 下载源。`1x`、`3x`、`ios-all`、`android-all` 需要切图 JSON 中存在对应的 `scale_urls`，否则脚本会提示缺失，不会复制同一张图片伪造成多倍率资源。
+> `get_design_slices.mjs` 会尽量根据切图逻辑尺寸生成 `scale_urls`。`download_url` 只作为默认 Web 2x 下载源；若某些旧稿缺少尺寸导致无法生成 `scale_urls`，`1x`、`3x`、`ios-all`、`android-all` 会提示缺失，不会复制同一张图片伪造成多倍率资源。
+
+> `get_design_specs.mjs --download-images` 会把 HTML 中的 `<img src>` 和 CSS `url(...)` 背景资源一并下载到本地映射目录，最终实现时不要保留蓝湖 CDN 地址。
 
 ## 兼容性
 

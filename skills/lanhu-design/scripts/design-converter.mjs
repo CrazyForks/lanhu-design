@@ -742,20 +742,72 @@ export function minifyHtml(html) {
 
 export function localizeImageUrls(htmlCode, designName) {
   if (!htmlCode) return { html: htmlCode, mapping: {} };
-  const safeDesign = String(designName || "design").replace(/[^A-Za-z0-9_-]/g, "_");
+  const safeDesign = String(designName || "design").replace(/[^A-Za-z0-9_-]/g, "_") || "design";
   const mapping = {};
-  const counter = {};
-  const result = htmlCode.replace(/src="(https?:\/\/[^"]+)"/g, (match, encodedUrl) => {
+  const urlToLocalPath = {};
+  const usedNames = new Set();
+  const counter = { img: 0 };
+
+  function uniqueName(stem, ext) {
+    let name = `${stem}${ext}`;
+    let index = 2;
+    while (usedNames.has(name)) {
+      name = `${stem}_${index}${ext}`;
+      index += 1;
+    }
+    usedNames.add(name);
+    return name;
+  }
+
+  function safeFileStem(value, fallback) {
+    const cleaned = String(value || "")
+      .replace(/-\d+$/, "")
+      .replace(/[^A-Za-z0-9._-]+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^[._-]+|[._-]+$/g, "");
+    return cleaned || fallback;
+  }
+
+  function localPathFor(encodedUrl, hint) {
     const url = unescapeHtml(encodedUrl);
+    if (urlToLocalPath[url]) return urlToLocalPath[url];
     let ext = ".png";
     try { const u = new URL(url); const e = u.pathname.split(".").pop().toLowerCase(); if (["png","jpg","jpeg","webp","gif","svg"].includes(e)) ext = `.${e}`; } catch {}
-    const urlKey = url.split("?")[0].split("/").pop().replace(/[^A-Za-z0-9._-]/g, "_") || "img";
-    const stem = urlKey.replace(/\.[^.]+$/, "");
-    counter[stem] = (counter[stem] || 0) + 1;
-    const localName = counter[stem] > 1 ? `${stem}_${counter[stem]}${ext}` : `${stem}${ext}`;
+    const urlKey = url.split("?")[0].split("/").pop()?.replace(/[^A-Za-z0-9._-]/g, "_") || "";
+    const fallback = urlKey ? urlKey.replace(/\.[^.]+$/, "") : `${safeDesign}_img_${++counter.img}`;
+    const stem = safeFileStem(hint, safeFileStem(fallback, `${safeDesign}_img_${++counter.img}`));
+    const localName = uniqueName(stem, ext);
     const localPath = `./assets/slices/${localName}`;
     mapping[localPath] = url;
-    return `src="${escapeHtml(localPath)}"`;
+    urlToLocalPath[url] = localPath;
+    return localPath;
+  }
+
+  const urlToCssClass = {};
+  const styleMatch = htmlCode.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+  if (styleMatch) {
+    for (const ruleMatch of styleMatch[1].matchAll(/\.([\w-]+)\s*\{([^}]*)\}/g)) {
+      const cls = ruleMatch[1];
+      for (const urlMatch of ruleMatch[2].matchAll(/url\(\s*(['"]?)(https?:\/\/[^'")\s]+)\1\s*\)/g)) {
+        urlToCssClass[unescapeHtml(urlMatch[2])] ||= cls;
+      }
+    }
+  }
+
+  let result = htmlCode.replace(/<img\b[^>]*>/g, (tag) => {
+    const srcMatch = tag.match(/\bsrc=(["'])(https?:\/\/.*?)\1/i);
+    if (!srcMatch) return tag;
+    const classMatch = tag.match(/\bclass=(["'])(.*?)\1/i);
+    const hint = classMatch?.[2]?.split(/\s+/)[0] || urlToCssClass[unescapeHtml(srcMatch[2])];
+    const localPath = localPathFor(srcMatch[2], hint);
+    return tag.replace(srcMatch[0], `src=${srcMatch[1]}${escapeHtml(localPath)}${srcMatch[1]}`);
   });
+
+  result = result.replace(/url\(\s*(['"]?)(https?:\/\/[^'")\s]+)\1\s*\)/g, (match, quote, encodedUrl) => {
+    const url = unescapeHtml(encodedUrl);
+    const localPath = localPathFor(encodedUrl, urlToCssClass[url]);
+    return `url("${escapeCssUrl(localPath)}")`;
+  });
+
   return { html: result, mapping };
 }

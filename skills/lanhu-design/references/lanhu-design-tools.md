@@ -141,6 +141,20 @@ node scripts/get_design_slices.mjs "https://lanhuapp.com/..." --design "首页" 
       "type": "bitmap",
       "download_url": "https://...",
       "size": "40x40",
+      "scale_urls": {
+        "1x": "https://...?x-oss-process=image/resize,w_40,h_40/format,png",
+        "2x": "https://...",
+        "3x": "https://...?x-oss-process=image/resize,w_120,h_120/format,png",
+        "ios_1x": "https://...?x-oss-process=image/resize,w_20,h_20/format,png",
+        "ios_2x": "https://...?x-oss-process=image/resize,w_40,h_40/format,png",
+        "ios_3x": "https://...?x-oss-process=image/resize,w_60,h_60/format,png",
+        "android_mdpi": "https://...?x-oss-process=image/resize,w_20,h_20/format,png",
+        "android_hdpi": "https://...?x-oss-process=image/resize,w_30,h_30/format,png",
+        "android_xhdpi": "https://...?x-oss-process=image/resize,w_40,h_40/format,png",
+        "android_xxhdpi": "https://...?x-oss-process=image/resize,w_60,h_60/format,png",
+        "android_xxxhdpi": "https://..."
+      },
+      "logical_size": { "width": 40, "height": 40 },
       "position": { "x": 12, "y": 24 },
       "parent_name": "导航栏",
       "layer_path": "首页/导航栏/icon-导出",
@@ -161,7 +175,7 @@ node scripts/get_design_slices.mjs "https://lanhuapp.com/..." --design "首页" 
 - Web：`1x`、`2x`、`3x`。推荐 Web 2x，通常是原始高质量图。
 - iOS：`ios_1x`、`ios_2x`、`ios_3x`，文件命名通常为 `name.png`、`name@2x.png`、`name@3x.png`。
 - Android：`android_mdpi`、`android_hdpi`、`android_xhdpi`、`android_xxhdpi`、`android_xxxhdpi`，分别放入 `mipmap-*` 或项目约定目录。
-- 只有 `2x` 会在缺少 `scale_urls` 时回退到 `download_url`。其它倍率和 `ios-all` / `android-all` 必须依赖真实的 `scale_urls`，不能复制同一 URL 冒充多倍率资源。
+- `get_design_slices.mjs` 会尽量生成 `scale_urls`。只有 `2x` 会在缺少 `scale_urls` 时回退到 `download_url`；其它倍率和 `ios-all` / `android-all` 必须依赖真实的 `scale_urls`，不能复制同一 URL 冒充多倍率资源。
 
 下载策略：
 
