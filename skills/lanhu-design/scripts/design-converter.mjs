@@ -591,7 +591,7 @@ function isImageLayer(layer) {
   if (t === "bitmap" || t === "image") return true;
   if (layer.imageData && !layer.layers?.length) return true;
   // Figma：style.fills 含 image 类型填充
-  return getFills(layer).some(f => f.type === "image" || f.fillType === 2);
+  return Boolean(getImageSrc(layer)) && getFills(layer).some(f => f.type === "image" || f.fillType === 2);
 }
 
 function isTextLayer(layer) {
@@ -608,13 +608,17 @@ function getTextContent(layer) {
     || "";
 }
 
+function getLayerPath(parentPath, name) {
+  return parentPath ? `${parentPath}/${name || "(unnamed)"}` : (name || "(unnamed)");
+}
+
 function safeCls(name) {
   return String(name || "").replace(/[^A-Za-z0-9_-]/g, "_").replace(/^[^A-Za-z]/, "l$&");
 }
 
 // Figma 子图层 frame 是绝对画板坐标（实测：Battery@(672,35) 的子 Border 也是 @(672,35)），
 // 因此扁平化渲染——所有可见叶子层作为画板直接子元素绝对定位，容器层只递归不包裹，避免双重偏移。
-function sketchLayersToHtml(layers, scale, indent) {
+function sketchLayersToHtml(layers, scale, indent, parentPath = "") {
   const sp = " ".repeat(indent);
   const parts = [];
   for (const layer of layers || []) {
@@ -622,10 +626,11 @@ function sketchLayersToHtml(layers, scale, indent) {
     const t = normType(layer);
     const hasChildren = Array.isArray(layer.layers) && layer.layers.length > 0;
     const isContainer = hasChildren && !isImageLayer(layer) && !isTextLayer(layer);
+    const layerPath = getLayerPath(parentPath, layer.name);
 
     // 纯容器（group/artboard 等）：不渲染自身包裹，直接递归子层（坐标已是绝对值）。
     if (isContainer && SKETCH_SKIP_TYPES.has(t)) {
-      const inner = sketchLayersToHtml(layer.layers, scale, indent);
+      const inner = sketchLayersToHtml(layer.layers, scale, indent, layerPath);
       if (inner) parts.push(inner);
       continue;
     }
@@ -633,21 +638,36 @@ function sketchLayersToHtml(layers, scale, indent) {
     const css = getSketchLayerCss(layer, scale);
     const cls = escapeHtml(safeCls(layer.name));
     const styleAttr = escapeHtml(css.replace(/"/g, "'"));
+    const dataCss = styleAttr;
+    const title = escapeHtml(layerPath);
     if (isImageLayer(layer)) {
       // 图片层整体已被导出为一张切片图，用 image.imageUrl，不再递归子层。
       const src = getImageSrc(layer);
-      parts.push(`${sp}<img class="${cls}" referrerpolicy="no-referrer" src="${escapeHtml(src)}" style="${styleAttr}" />`);
+      parts.push(`${sp}<img class="${cls}" title="${title}" data-css="${dataCss}" referrerpolicy="no-referrer" src="${escapeHtml(src)}" style="${styleAttr}" />`);
     } else if (isTextLayer(layer)) {
       const text = getTextContent(layer);
-      parts.push(`${sp}<span class="${cls}" style="${styleAttr}">${escapeHtml(text)}</span>`);
+      parts.push(`${sp}<span class="${cls}" title="${title}" data-css="${dataCss}" style="${styleAttr}">${escapeHtml(text)}</span>`);
     } else {
       // 有样式的非容器层（含带子层的非 skip 类型）：渲染自身 + 递归子层（子层同为绝对坐标，平级排列）。
-      const inner = hasChildren ? sketchLayersToHtml(layer.layers, scale, indent) : "";
-      parts.push(`${sp}<div class="${cls}" style="${styleAttr}"></div>`);
+      const inner = hasChildren ? sketchLayersToHtml(layer.layers, scale, indent, layerPath) : "";
+      parts.push(`${sp}<div class="${cls}" title="${title}" data-css="${dataCss}" style="${styleAttr}"></div>`);
       if (inner) parts.push(inner);
     }
   }
   return parts.join("\n");
+}
+
+export function detectDesignScale(sketchData = {}, canvasSize = {}) {
+  const deviceText = String(sketchData.device || sketchData.meta?.device || "");
+  if (/@3x/i.test(deviceText)) return 3;
+  if (/@2x/i.test(deviceText)) return 2;
+  if (/@1x/i.test(deviceText)) return 1;
+  const scale = Number(sketchData.sliceScale || sketchData.exportScale || sketchData.meta?.sliceScale);
+  if (Number.isFinite(scale) && scale > 0) return scale;
+  const root = sketchData.artboard || sketchData.board || (sketchData.info && sketchData.info[0]);
+  const rootWidth = getFrame(root || {}).width || root?.width || 0;
+  if (canvasSize.width && rootWidth && rootWidth > canvasSize.width * 1.5) return Math.round(rootWidth / canvasSize.width);
+  return (canvasSize.width || rootWidth) > 750 ? 2 : 1;
 }
 
 export function convertSketchToHtml(sketchData, designScale, designImgUrl) {
@@ -686,6 +706,39 @@ ${body}
 
 // ── Sketch 结构化标注（降级路径文本输出） ─────────────────────────────────────
 
+function collectLayerAnnotations(layers, scale, parentPath = "", out = []) {
+  for (const layer of layers || []) {
+    if (!layer || !isLayerVisible(layer)) continue;
+    const name = layer.name || "(unnamed)";
+    const path = getLayerPath(parentPath, name);
+    const annotation = {
+      name,
+      path,
+      type: layer.type || layer.ddsType || "unknown",
+      css: getSketchLayerCss(layer, scale),
+    };
+    if (isTextLayer(layer)) annotation.text = getTextContent(layer);
+    const src = isImageLayer(layer) ? getImageSrc(layer) : "";
+    if (src) annotation.src = src;
+    out.push(annotation);
+    collectLayerAnnotations(layer.layers, scale, path, out);
+  }
+  return out;
+}
+
+export function extractLayerAnnotationsFromSketch(sketchData, designScale) {
+  const root = sketchData.artboard || sketchData.board || (sketchData.info && sketchData.info[0]);
+  return collectLayerAnnotations(root?.layers || [], designScale || 1);
+}
+
+function annotationLine(item) {
+  const suffix = [
+    item.text ? `text="${item.text}"` : "",
+    item.src ? `src=${item.src}` : "",
+  ].filter(Boolean).join(" | ");
+  return `- [${item.type}] ${item.path}: ${item.css}${suffix ? ` | ${suffix}` : ""}`;
+}
+
 function annotateLayer(layer, scale, depth, lines) {
   if (!layer || !isLayerVisible(layer)) return;
   const sc = scale || 1;
@@ -721,11 +774,28 @@ function annotateLayer(layer, scale, depth, lines) {
 
 export function extractFullAnnotationsFromSketch(sketchData, designScale) {
   const sc = designScale || 1;
-  const lines = [];
   const root = sketchData.artboard || (sketchData.info && sketchData.info[0]);
   const layers = root?.layers || [];
-  for (const layer of layers) annotateLayer(layer, sc, 0, lines);
-  return lines.join("\n");
+  const annotations = collectLayerAnnotations(layers, sc);
+  const textLayers = annotations.filter(item => item.text);
+  const imageLayers = annotations.filter(item => item.src);
+  const otherLayers = annotations.filter(item => !item.text && !item.src);
+  const lines = [
+    `设计标注摘要 scale=@${sc}x total=${annotations.length}`,
+    "",
+    `文本图层 (${textLayers.length})`,
+    ...textLayers.map(annotationLine),
+    "",
+    `图片/切图图层 (${imageLayers.length})`,
+    ...imageLayers.map(annotationLine),
+    "",
+    `形状/普通图层 (${otherLayers.length})`,
+    ...otherLayers.map(annotationLine),
+  ];
+  if (annotations.length === 0) {
+    for (const layer of layers) annotateLayer(layer, sc, 0, lines);
+  }
+  return lines.join("\n").trim();
 }
 
 // ── HTML 压缩 & 图片本地化 ─────────────────────────────────────────────────────

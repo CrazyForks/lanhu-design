@@ -52,6 +52,7 @@ description: "Use this skill when working with Lanhu UI design drafts: get UI de
 4.5. **获取设计规格 HTML+CSS**：运行 `node scripts/get_design_specs.mjs <url> --design <name_or_index>` 获取规格。返回的 `source` 字段决定数据权威性，必须先判断：
    - `source="dds"`：从 DDS Schema 生成的高精度 flex 布局 HTML+CSS，`html` 字段是颜色、字号、间距、渐变、圆角、布局等所有参数的权威来源，直接复用、不得主观修改；原图用于核对布局是否错位。
    - `source="sketch"`：降级路径，`html` 仅为绝对定位的元素清单，**不可当作布局权威**。此时以原图视觉为布局主力参考，以 `design_tokens` / `sketch_annotations` 的原始数值为精确数值来源。
+   - `source="sketch"` 时，HTML 元素带 `data-css`，返回还包含 `design_scale` 和 `layer_css_annotations`，用于逐图层核对路径、文本、切图和 CSS 标注。
    - `image_url_mapping` 列出需要下载的图片资源映射表。若返回 `dds_error`，说明已降级到 sketch，应更依赖原图。
    - 返回的 `source_guidance` 字段是针对当前 `source` 的数据权威性指引，直接按它执行。
    - 加 `--output <dir> --download-images` 可在保存 HTML 的同时自动把引用图片下载到 `<dir>/assets/slices/`，使保存的 HTML 可直接在浏览器渲染核对。

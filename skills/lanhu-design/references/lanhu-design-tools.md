@@ -241,10 +241,12 @@ node scripts/get_design_specs.mjs "https://lanhuapp.com/..." --design "首页" -
   "status": "success",
   "source": "dds",
   "design_name": "首页设计",
+  "design_scale": 2,
   "canvas_size": { "width": 375, "height": 667 },
   "html": "<!DOCTYPE html>...",
   "design_tokens": "[shapePath] \"按钮背景\" @(12,340) 200x50\n  fill: linear-gradient(90deg, ...)",
   "sketch_annotations": null,
+  "layer_css_annotations": null,
   "image_url_mapping": {
     "./assets/slices/icon_home.png": "https://cdn.lanhuapp.com/..."
   },
@@ -256,16 +258,18 @@ node scripts/get_design_specs.mjs "https://lanhuapp.com/..." --design "首页" -
 字段说明：
 
 - `source`：`"dds"` 表示主路径（精确 flex HTML），`"sketch"` 表示降级路径（绝对定位 HTML）。
+- `design_scale`：Sketch/Figma 降级时使用的倍率，优先来自 `device`、`sliceScale`、`exportScale` 或 `meta.sliceScale`。
 - `html`：完整 HTML+CSS 文档，是所有 CSS 属性值的权威来源。直接复用其中的颜色、字号、间距等值。
 - `design_tokens`：高风险元素标注（渐变、非均匀圆角、阴影、opacity<100），补充 HTML 中可能被合并的视觉信息。
-- `sketch_annotations`：仅 `source=sketch` 时有值，包含图层结构化标注。
+- `sketch_annotations`：仅 `source=sketch` 时有值，包含按文本、图片/切图、形状/普通图层分组的结构化标注。
+- `layer_css_annotations`：仅 `source=sketch` 时有值，数组形式列出每个可见图层的 `path`、`type`、`css`、`text` 或 `src`。
 - `image_url_mapping`：本地路径 → 远程 CDN URL 映射表，用于后续下载图片资源。
 
 使用规则：
 
 - `html` 字段是 CSS 数值的唯一权威来源，必须直接复用，不能主观修改。
 - `image_url_mapping` 中的远程 URL 需要下载为本地资源，不能在最终代码中保留。
-- `source="sketch"` 时 HTML 用绝对定位，还原时注意转换为目标框架的布局方式。
+- `source="sketch"` 时 HTML 用绝对定位且元素带 `data-css`，还原时结合 `sketch_annotations` / `layer_css_annotations` 转换为目标框架的布局方式。
 
 ## API 端点参考
 

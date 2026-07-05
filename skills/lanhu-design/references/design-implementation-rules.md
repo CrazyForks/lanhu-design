@@ -33,14 +33,15 @@ HTML+CSS 是 **`source="dds"` 时**设计规格的权威来源。必须直接复
 
 1. **设计图原图**：布局结构、层级、视觉效果的主力参考。生成的 HTML 是扁平绝对定位清单，不能当布局权威。
 2. **`design_tokens` / `sketch_annotations`**：颜色、字号、间距、圆角、阴影等精确数值的权威来源。
-3. **`html` 字段**：仅作元素清单和绝对定位参考。
+3. **`layer_css_annotations` / HTML `data-css`**：逐图层核对路径、文本、切图地址和 CSS 标注，辅助确认元素是否齐全。
+4. **`html` 字段**：仅作元素清单和绝对定位参考。
 
 ### Design Tokens 交叉引用规则
 
 Design Tokens 从原始 Sketch 数据提取。
 
 - `source="dds"` 时：仅作 HTML+CSS 的**补充参考**，不能覆盖 HTML 的值。仅当 HTML 中某属性**明确缺失**（而非写法不同）时才用 Token 补充。同一属性值不同时以 HTML 为准。
-- `source="sketch"` 时：Design Tokens / `sketch_annotations` 是精确数值的**权威来源**，HTML 不参与数值仲裁。
+- `source="sketch"` 时：Design Tokens / `sketch_annotations` / `layer_css_annotations` 是精确数值的**权威来源**，HTML 只用于核对元素清单和可视预览。
 - 两种来源都重点关注：复合渐变（多色阶）、边框样式、圆角、透明度、阴影。
 
 ## 框架检测与代码生成

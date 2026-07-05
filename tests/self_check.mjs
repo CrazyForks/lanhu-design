@@ -10,6 +10,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   convertLanhuToHtml,
   convertSketchToHtml,
+  detectDesignScale,
+  extractFullAnnotationsFromSketch,
+  extractLayerAnnotationsFromSketch,
   localizeImageUrls,
 } from "../skills/lanhu-design/scripts/design-converter.mjs";
 
@@ -40,6 +43,48 @@ function checkHtmlEscaping() {
   });
   assert.match(sketchHtml, /&lt;i&gt;Hello&lt;\/i&gt;/);
   assert.doesNotMatch(sketchHtml, /<i>Hello<\/i>/);
+  assert.match(sketchHtml, /data-css="position: absolute;/);
+  assert.match(sketchHtml, /title="Title"/);
+}
+
+function checkSketchAnnotations() {
+  const sketchData = {
+    device: "iPhone @3x",
+    artboard: {
+      frame: { width: 1125, height: 2001 },
+      layers: [
+        {
+          type: "text",
+          name: "Title",
+          frame: { left: 30, top: 60, width: 300, height: 60 },
+          text: { value: "Hello", style: { font: { size: 48 }, color: { value: "rgba(1,2,3,1)" } } },
+        },
+        {
+          type: "bitmap",
+          name: "Hero",
+          frame: { left: 0, top: 0, width: 600, height: 300 },
+          image: { imageUrl: "https://cdn.test/hero.png" },
+        },
+        {
+          type: "shape",
+          name: "Card",
+          frame: { left: 15, top: 150, width: 330, height: 120 },
+          style: { fills: [{ type: "color", color: { value: "rgba(255,255,255,1)" } }] },
+        },
+      ],
+    },
+  };
+  assert.equal(detectDesignScale(sketchData, { width: 375, height: 667 }), 3);
+  const annotations = extractLayerAnnotationsFromSketch(sketchData, 3);
+  assert.equal(annotations.length, 3);
+  assert.equal(annotations[0].path, "Title");
+  assert.equal(annotations[0].text, "Hello");
+  assert.equal(annotations[1].src, "https://cdn.test/hero.png");
+  const summary = extractFullAnnotationsFromSketch(sketchData, 3);
+  assert.match(summary, /设计标注摘要 scale=@3x total=3/);
+  assert.match(summary, /文本图层 \(1\)/);
+  assert.match(summary, /图片\/切图图层 \(1\)/);
+  assert.match(summary, /形状\/普通图层 \(1\)/);
 }
 
 function checkImageLocalization() {
@@ -166,6 +211,7 @@ async function checkScaleFallback() {
 }
 
 checkHtmlEscaping();
+checkSketchAnnotations();
 checkImageLocalization();
 await checkSliceDeduping();
 await checkScaleFallback();
