@@ -1,10 +1,10 @@
-# Changelog
+# 更新日志
 
-## Unreleased
+## 未发布
 
-- Move the installable skill into `skills/lanhu-design/` so repository-only files are kept out of the skill package when subdirectory installs are supported.
-- Move the self-check script to `tests/self_check.mjs` and update local validation commands.
-- Fix duplicate slice extraction when walking nested Lanhu layer data.
-- Escape generated HTML text and attributes in DDS and Sketch/Figma conversion output.
-- Require real `scale_urls` for non-2x and multi-density slice downloads instead of copying one `download_url` into multiple scale files.
-- Ignore local secret files such as `.env` and `.claude/settings.json`.
+- 将可安装技能移动到 `skills/lanhu-design/`，在支持子目录安装时避免把仓库说明、测试等文件装进技能目录。
+- 将自检脚本移动到 `tests/self_check.mjs`，并更新本地校验命令。
+- 修复遍历蓝湖嵌套图层数据时重复提取切图的问题。
+- 在 DDS 和 Sketch/Figma 转换输出中转义生成的 HTML 文本和属性。
+- 非 2x 与多密度切图下载必须使用真实的 `scale_urls`，不再把同一个 `download_url` 复制成多倍率文件。
+- 忽略 `.env` 和 `.claude/settings.json` 等本地敏感配置文件。
